@@ -66,8 +66,8 @@ separately as the research record.
 ## ⚙️ Installation
 
 ```bash
-git clone https://github.com/HakunaMatata04/thinking-inertia.git
-cd thinking-inertia
+git clone https://github.com/thinking-inertia/code.git
+cd code
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
