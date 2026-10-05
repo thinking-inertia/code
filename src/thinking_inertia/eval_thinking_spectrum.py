@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Evaluate thinking-spectrum Q:(T+A) prompting modes and score explanation relevance with MiniLM.
+Evaluate thinking-spectrum Q:(T+A) prompting modes and optionally score sentence-level similarity with the bundled MiniLM compatibility scorer.
 """
 
 from __future__ import annotations

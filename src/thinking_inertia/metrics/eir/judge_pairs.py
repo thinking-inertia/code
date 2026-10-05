@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply the rebuttal GPT-5.5 rubric to answer-space Q/T pairs in batches."""
+"""Apply the visible-inference rubric to answer-space Q/T pairs in batches."""
 
 from __future__ import annotations
 
