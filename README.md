@@ -12,7 +12,7 @@
   <a href="https://thinking-inertia.github.io/"><img alt="Project Page" src="https://img.shields.io/badge/%F0%9F%8C%90%20Project-Page-5b9e1e"></a>
   <img alt="arXiv link pending" src="https://img.shields.io/badge/arXiv-link%20pending-b31b1b">
   <a href="LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/License-MIT-238636"></a>
-  <a href="https://huggingface.co/datasets/thinking-inertia/llm-nothinking-trajectories"><img alt="Dataset Trajectory" src="https://img.shields.io/badge/%F0%9F%A4%97%20Dataset-Trajectory-FFD21E"></a>
+  <a href="https://huggingface.co/datasets/thinking-inertia/llm-nothinking-trajectories"><img alt="Data" src="https://img.shields.io/badge/%F0%9F%A4%97%20Data-FFD21E"></a>
 </p>
 
 <em>Response-level evidence for when language models keep thinking after being told not to.</em>
