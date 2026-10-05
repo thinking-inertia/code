@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+title: "Thinking Inertia: LLMs Keep Thinking When Told Not To"
+type: article
+message: "If you use this code, please cite the accompanying paper."
+authors:
+  - family-names: Lei
+    given-names: Dianqiao
+  - family-names: Lin
+    given-names: Kevin Qinghong
+  - family-names: Lu
+    given-names: Pan
+  - family-names: Torr
+    given-names: Philip
+  - family-names: Zou
+    given-names: James
+repository-code: "https://github.com/thinking-inertia/code"
+date-released: 2026-10-01
+version: "0.1.0"

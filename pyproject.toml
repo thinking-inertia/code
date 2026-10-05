@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thinking-inertia"
+version = "0.1.0"
+description = "Evaluation code for LLM no-thinking behavior and thinking inertia."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "datasets",
+  "math-verify",
+  "openai",
+  "sentence-transformers",
+  "torch",
+  "transformers",
+]
+
+[project.scripts]
+thinking-download-datasets = "thinking_inertia.download_datasets:main"
+thinking-eval-spectrum = "thinking_inertia.eval_thinking_spectrum:main"
+thinking-eval-nonreason = "thinking_inertia.eval_nonreason:main"
+thinking-score-response = "thinking_inertia.score_full_response_similarity:main"
+thinking-rescore-math = "thinking_inertia.rescore_math_records:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
