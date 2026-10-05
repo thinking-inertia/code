@@ -55,6 +55,8 @@ are response-level observables; they do not claim to reveal latent cognition.
 - **Thinking inertia.** Within each answer space, stricter no-thinking controls
   reduce visible inference (`M5 < M2`) but do not erase the answer-space effect.
 
+Here, **M2** is native think-off (disabled thinking without an added output constraint), while **M5** is the strict answer-only prompt.
+
 ## ⚙️ Installation
 
 ```bash
