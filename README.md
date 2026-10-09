@@ -10,7 +10,7 @@
 
 <p>
   <a href="https://thinking-inertia.github.io/"><img alt="Project Page" src="https://img.shields.io/badge/%F0%9F%8C%90%20Project-Page-5b9e1e"></a>
-  <img alt="arXiv link pending" src="https://img.shields.io/badge/arXiv-link%20pending-b31b1b">
+  <a href="https://arxiv.org/abs/2610.11765"><img alt="arXiv 2610.11765" src="https://img.shields.io/badge/arXiv-2610.11765-b31b1b"></a>
   <a href="LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/License-MIT-238636"></a>
   <a href="https://huggingface.co/datasets/thinking-inertia/llm-nothinking-trajectories"><img alt="Data Trajectory" src="https://img.shields.io/badge/%F0%9F%A4%97%20Data-Trajectory-FFD21E"></a>
 </p>
@@ -127,6 +127,9 @@ the user at runtime and are not distributed by this repository.
 @article{lei2026thinkinginertia,
   title   = {Thinking Inertia: LLMs Keep Thinking When Told Not To},
   author  = {Lei, Dianqiao and Lin, Kevin Qinghong and Lu, Pan and Torr, Philip and Zou, James},
-  year    = {2026}
+  year    = {2026},
+  eprint  = {2610.11765},
+  archivePrefix = {arXiv},
+  url     = {https://arxiv.org/abs/2610.11765}
 }
 ```
