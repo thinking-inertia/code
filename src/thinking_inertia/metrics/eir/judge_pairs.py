@@ -37,10 +37,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-chars", type=int, default=90_000)
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--retries", type=int, default=5)
+    parser.add_argument("--m6-residual-rubric", action="store_true",
+        help="Use the M6 evaluation rubric and question-grouped requests on verified M6 residual Q/T pairs.")
     return parser.parse_args()
 
 
-def completed_ids(path: Path) -> set[str]:
+def completed_ids(path: Path, *, m6_residual: bool = False) -> set[str]:
     if not path.exists():
         return set()
     completed: set[str] = set()
@@ -52,6 +54,11 @@ def completed_ids(path: Path) -> set[str]:
                 row = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if m6_residual:
+                from ...m6_prefill import PROTOCOL
+                from .m6_rubric import SYSTEM_PROMPT_SHA256
+                if row.get("m6_protocol") != PROTOCOL or row.get("rubric_sha256") != SYSTEM_PROMPT_SHA256:
+                    raise ValueError("Existing labels do not use the M6 residual rubric; use a separate output file")
             if row.get("category") in CATEGORIES:
                 completed.add(str(row.get("record_id", "")))
     return completed
@@ -94,6 +101,12 @@ async def judge_batch(
         "Return one label for every ID in input order.\n\nITEMS:\n"
         + json.dumps(public_items, ensure_ascii=False)
     )
+    system_prompt = SYSTEM_PROMPT
+    m6_residual = getattr(args, "m6_residual_rubric", False)
+    if m6_residual:
+        from . import m6_rubric
+        system_prompt = m6_rubric.SYSTEM_PROMPT
+        user_prompt = m6_rubric.user_prompt(rows)
     expected = [row["record_id"] for row in rows]
     row_by_id = {row["record_id"]: row for row in rows}
     last_error = ""
@@ -103,7 +116,7 @@ async def judge_batch(
             response = await client.chat.completions.create(
                 model=args.model,
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 max_tokens=args.max_tokens,
@@ -127,7 +140,7 @@ async def judge_batch(
             if set(parsed) != set(expected):
                 raise ValueError("returned IDs differ from requested IDs")
 
-            return [
+            results = [
                 {
                     "record_id": record_id,
                     "category": parsed[record_id][0],
@@ -141,6 +154,15 @@ async def judge_batch(
                 }
                 for record_id in expected
             ]
+            if m6_residual:
+                from ...m6_prefill import PROTOCOL
+                results = [
+                    {**label, "record_id": target_id, "m6_protocol": PROTOCOL,
+                     "rubric_sha256": m6_rubric.SYSTEM_PROMPT_SHA256}
+                    for label in results
+                    for target_id in row_by_id[label["record_id"]].get("_m6_expand_to", [label["record_id"]])
+                ]
+            return results
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}; raw={content[:2000]!r}"
             await asyncio.sleep(min(2**attempt, 20))
@@ -155,7 +177,8 @@ async def main_async(args: argparse.Namespace) -> None:
         raise RuntimeError("set OPENAI_API_KEY")
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    completed = completed_ids(args.output)
+    m6_residual = getattr(args, "m6_residual_rubric", False)
+    completed = completed_ids(args.output, m6_residual=m6_residual)
     pending: list[dict[str, Any]] = []
     empty_rows: list[dict[str, Any]] = []
     with args.input.open("r", encoding="utf-8") as handle:
@@ -163,6 +186,10 @@ async def main_async(args: argparse.Namespace) -> None:
             if not line.strip():
                 continue
             row = json.loads(line)
+            if m6_residual:
+                from ...m6_prefill import PROTOCOL
+                if row.get("m6_protocol") != PROTOCOL:
+                    raise ValueError("M6 residual judging requires assistant-prefill protocol provenance")
             if row["record_id"] in completed:
                 continue
             if row["t_is_empty"]:
@@ -178,11 +205,20 @@ async def main_async(args: argparse.Namespace) -> None:
             else:
                 pending.append(row)
 
+    if m6_residual:
+        from .m6_rubric import SYSTEM_PROMPT_SHA256
+        for row in empty_rows:
+            row.update(m6_protocol=PROTOCOL, rubric_sha256=SYSTEM_PROMPT_SHA256)
+
     with args.output.open("a", encoding="utf-8") as output:
         for row in empty_rows:
             output.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    batches = make_batches(pending, args.batch_size, args.max_chars)
+    if m6_residual:
+        from .m6_rubric import make_batches as make_m6_batches
+        batches = make_m6_batches(pending, args.batch_size, args.max_chars)
+    else:
+        batches = make_batches(pending, args.batch_size, args.max_chars)
     print(
         json.dumps(
             {
@@ -227,7 +263,9 @@ async def main_async(args: argparse.Namespace) -> None:
                         errors.write(
                             json.dumps(
                                 {
-                                    "ids": [row["record_id"] for row in batch],
+                                    "ids": ([target_id for row in batch
+                                             for target_id in row.get("_m6_expand_to", [row["record_id"]])]
+                                            if m6_residual else [row["record_id"] for row in batch]),
                                     "error": f"{type(exc).__name__}: {exc}",
                                 },
                                 ensure_ascii=False,

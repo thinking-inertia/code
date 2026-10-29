@@ -12,6 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from .m6_prefill import PROTOCOL, require_protocol, score_fields
 from .eval_nonreason import _normalize_gold, _normalize_pred, _score_answer
 from .eval_thinking_spectrum import MODE_SPECS, _group_summary, _summarize_records
 
@@ -146,30 +147,40 @@ def main() -> int:
     changed = 0
 
     for record in records:
+        require_protocol(record)
         if record.get("dataset") not in datasets:
             continue
         if record.get("error"):
             continue
         if str(record.get("task_type", "")) != "math":
             continue
-        prediction_text = str(
-            record.get("boxed_inner")
-            or record.get("answer_raw")
-            or record.get("prediction")
-            or record.get("answer_view_content")
-            or record.get("content")
-            or ""
-        )
-        gold_text = str(record.get("gold_answer") or record.get("gold_answer_source") or "")
-        normalized_prediction = str(record.get("prediction") or "")
-        normalized_gold = str(record.get("gold_answer") or "")
-        correct, scorer = _score_answer(
-            task_type="math",
-            prediction_text=prediction_text,
-            gold_text=gold_text,
-            normalized_prediction=normalized_prediction,
-            normalized_gold=normalized_gold,
-        )
+        if record.get("m6_protocol") == PROTOCOL:
+            sample = {"task_type": "math", "dataset": record["dataset"],
+                      "answer": record["gold_answer"],
+                      "meta": {"raw_solution": record.get("gold_answer_source", "")}}
+            result = score_fields(sample, str(record.get("content", "")),
+                {"reasoning": "", "reasoning_content": "", "reasoning_details": None},
+                accuracy_policy=record.get("accuracy_policy", "evaluator"))
+            correct, scorer = result["is_correct"], result["answer_scorer"]
+        else:
+            prediction_text = str(
+                record.get("boxed_inner")
+                or record.get("answer_raw")
+                or record.get("prediction")
+                or record.get("answer_view_content")
+                or record.get("content")
+                or ""
+            )
+            gold_text = str(record.get("gold_answer") or record.get("gold_answer_source") or "")
+            normalized_prediction = str(record.get("prediction") or "")
+            normalized_gold = str(record.get("gold_answer") or "")
+            correct, scorer = _score_answer(
+                task_type="math",
+                prediction_text=prediction_text,
+                gold_text=gold_text,
+                normalized_prediction=normalized_prediction,
+                normalized_gold=normalized_gold,
+            )
         old_correct = bool(record.get("is_correct"))
         old_scorer = str(record.get("answer_scorer") or "")
         record["is_correct"] = bool(correct)

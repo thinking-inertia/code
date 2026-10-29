@@ -13,6 +13,8 @@ from typing import Any
 
 import numpy as np
 
+from ...m6_prefill import PROTOCOL, require_protocol
+
 
 TASK = (
     "Given a question, retrieve pre-answer text that contains reasoning relevant "
@@ -80,7 +82,10 @@ def load_rows(inputs: list[Path], limit: int) -> list[dict[str, Any]]:
                 )
                 if not question:
                     continue
+                require_protocol(row)
                 text = normalize_space(
+                    (row["extracted_t"] if "extracted_t" in row else row.get("pre_answer_text", ""))
+                    if row.get("m6_protocol") == PROTOCOL else
                     row.get("pre_answer_text") or row.get("extracted_t") or row.get("T")
                 )
                 rows.append(

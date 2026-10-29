@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from .benchmark_scorers import math_verify_available
+from . import m6_prefill
 from .eval_nonreason import (
     _extract_answer_only_pred,
     _example_choice_label,
@@ -158,6 +159,12 @@ def parse_args() -> argparse.Namespace:
         default="chat",
         help="Which OpenAI-compatible endpoint to use.",
     )
+    parser.add_argument("--m6-prefill", choices=["qwen-completions", "deepseek-prefix"], default="",
+                        help="Required for M6: a verified assistant-continuation backend.")
+    parser.add_argument("--m6-tokenizer", default="", help="Tokenizer/checkpoint path matching the served Qwen3 model.")
+    parser.add_argument("--m6-tokenizer-revision", default=None, help="Optional pinned tokenizer revision.")
+    parser.add_argument("--m6-accuracy-policy", choices=["evaluator", "canonical_local", "legacy_math_rescore"],
+                        default="evaluator", help="M6 accuracy comparator; see the reproduction notes in README.")
     parser.add_argument(
         "--api-key",
         default="",
@@ -368,18 +375,6 @@ def _answer_format_line(task_type: str, choices: Any = None) -> str:
     return "Put the final answer in boxed{}, e.g. \\boxed{72}."
 
 
-def _mode6_answer_format_line(task_type: str, choices: Any = None) -> str:
-    if task_type == "mcq":
-        example_label = _example_choice_label(choices)
-        return (
-            f"Put only the final option label in boxed{{}}, e.g. \\boxed{{{example_label}}}. "
-            "The answer is \\boxed{"
-        )
-    if task_type == "bool":
-        return "Put only the final yes/no answer in boxed{}, e.g. \\boxed{yes}. The answer is \\boxed{"
-    return "Put the final answer in boxed{}, e.g. \\boxed{72}. The answer is \\boxed{"
-
-
 def _build_problem_text(sample: dict[str, Any]) -> str:
     question = str(sample.get("question", "")).strip()
     context = str(sample.get("context", "")).strip()
@@ -408,11 +403,7 @@ def _build_similarity_question_text(sample: dict[str, Any]) -> str:
 def _build_mode_prompt(sample: dict[str, Any], mode: str) -> str:
     task_type = str(sample.get("task_type", "")).strip()
     choices = sample.get("choices", [])
-    answer_line = (
-        _mode6_answer_format_line(task_type, choices)
-        if mode == "mode6"
-        else _answer_format_line(task_type, choices)
-    )
+    answer_line = _answer_format_line(task_type, choices)
     lines = [_build_problem_text(sample), MODE_SPECS[mode]["instruction"], answer_line]
     return "\n".join(line for line in lines if line)
 
@@ -490,6 +481,7 @@ def _call_model(
     api: str,
     request_retries: int = 2,
     retry_backoff: float = 1.0,
+    prefill_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     def provider_preferences() -> dict[str, Any] | None:
         provider: dict[str, Any] = {}
@@ -511,6 +503,12 @@ def _call_model(
                     break
                 time.sleep(max(0.0, retry_backoff) * (2**attempt))
         raise last_exc or RuntimeError("request failed")
+
+    if prefill_payload is not None:
+        if api not in {"chat", "completions"}:
+            raise ValueError("This endpoint cannot continue an assistant prefill")
+        endpoint = "chat/completions" if api == "chat" else "completions"
+        return request_with_retries(f"{base_url.rstrip('/')}/{endpoint}", prefill_payload)
 
     if api == "responses":
         url = f"{base_url.rstrip('/')}/responses"
@@ -886,7 +884,7 @@ def _summarize_records(
     max_nonreason_rates = [float(r.get("max_nonreason_rate", 1.0)) for r in records]
     t_word_counts = [int(r.get("t_word_count", 0)) for r in records]
     t_char_counts = [int(r.get("t_char_count", 0)) for r in records]
-    empty_t = sum(1 for r in records if not normalize_space(str(r.get("extracted_t", ""))))
+    empty_t = sum(1 for r in records if (r.get("nonreason_pass", False) if r.get("m6_protocol") == m6_prefill.PROTOCOL else not normalize_space(str(r.get("extracted_t", "")))))
     parse_failed = sum(1 for r in records if r.get("answer_parse_failed"))
     request_errors = sum(1 for r in records if str(r.get("error", "")).strip())
     has_reasoning_fields = sum(1 for r in records if r.get("has_reasoning_fields"))
@@ -1167,6 +1165,11 @@ def _evaluate_one_sample(
         "question_text_used_for_similarity": q_text,
     }
 
+    prefill_payload, prefill_metadata = (m6_prefill.prepare_request(args, prompt)
+        if mode == "mode6" else (None, {}))
+    if prefill_metadata:
+        base_record.update(prefill_metadata, accuracy_policy=args.m6_accuracy_policy)
+    raw = {}
     try:
         raw = _call_model(
             base_url=args.base_url,
@@ -1186,44 +1189,60 @@ def _evaluate_one_sample(
             api=args.api,
             request_retries=args.request_retries,
             retry_backoff=args.retry_backoff,
+            prefill_payload=prefill_payload,
         )
         extracted = _extract_choice_extended(raw)
         content = extracted["content"]
+        if mode == "mode6":
+            if not raw.get("choices"):
+                raise ValueError("Prefill response has no choices")
+            base_record["raw_generated_continuation"] = content
+            content = m6_prefill.PREFIX + content
         reasoning = extracted["reasoning"]
         reasoning_content = extracted["reasoning_content"]
         reasoning_details = extracted["reasoning_details"]
         finish_reason = extracted["finish_reason"]
         usage = extracted["usage"]
-        think_block, post_think_content = _extract_think_block(content)
-        answer_view = (
-            post_think_content
-            if (normalize_space(think_block) and normalize_space(post_think_content))
-            else content
-        )
-        boxed_inner = _last_boxed_inner(answer_view)
-        pred = _normalize_pred(task_type, answer_view, boxed_inner, choices=choices)
-        score_prediction_text = boxed_inner or pred or answer_view
-        is_correct, answer_scorer = _score_answer(
-            task_type=task_type,
-            prediction_text=score_prediction_text,
-            gold_text=gold_source,
-            normalized_prediction=pred,
-            normalized_gold=gold,
-        )
-        has_reasoning_fields = bool(normalize_space(reasoning) or normalize_space(reasoning_content))
-        visible_t_prefix, visible_answer_raw, answer_span_found = _extract_visible_t_and_a(
-            task_type,
-            answer_view,
-            choices=choices,
-            accept_display_math_wrapper=args.accept_display_math_wrapper,
-        )
-        t_payload = _build_t_payload(
-            reasoning=reasoning,
-            reasoning_content=reasoning_content,
-            reasoning_details=reasoning_details,
-            think_block=think_block,
-            visible_prefix=visible_t_prefix,
-        )
+        if mode == "mode6":
+            m6 = m6_prefill.score_fields(sample, content, extracted, accuracy_policy=args.m6_accuracy_policy)
+            base_record["first_box"] = m6["first_box"]
+            think_block = ""
+            answer_view, boxed_inner = m6["answer_view"], m6["boxed_inner"]
+            pred, is_correct, answer_scorer = m6["prediction"], m6["is_correct"], m6["answer_scorer"]
+            visible_t_prefix, visible_answer_raw = m6["content_t"], answer_view
+            answer_span_found, t_payload = m6["answer_span_found"], m6["t_payload"]
+            has_reasoning_fields = bool(normalize_space(reasoning) or normalize_space(reasoning_content))
+        else:
+            think_block, post_think_content = _extract_think_block(content)
+            answer_view = (
+                post_think_content
+                if (normalize_space(think_block) and normalize_space(post_think_content))
+                else content
+            )
+            boxed_inner = _last_boxed_inner(answer_view)
+            pred = _normalize_pred(task_type, answer_view, boxed_inner, choices=choices)
+            score_prediction_text = boxed_inner or pred or answer_view
+            is_correct, answer_scorer = _score_answer(
+                task_type=task_type,
+                prediction_text=score_prediction_text,
+                gold_text=gold_source,
+                normalized_prediction=pred,
+                normalized_gold=gold,
+            )
+            has_reasoning_fields = bool(normalize_space(reasoning) or normalize_space(reasoning_content))
+            visible_t_prefix, visible_answer_raw, answer_span_found = _extract_visible_t_and_a(
+                task_type,
+                answer_view,
+                choices=choices,
+                accept_display_math_wrapper=args.accept_display_math_wrapper,
+            )
+            t_payload = _build_t_payload(
+                reasoning=reasoning,
+                reasoning_content=reasoning_content,
+                reasoning_details=reasoning_details,
+                think_block=think_block,
+                visible_prefix=visible_t_prefix,
+            )
         extracted_t = t_payload["t_returned_readable"]
         t_source = t_payload["t_source"]
         t_sentences = split_explanation_sentences(extracted_t)
@@ -1289,8 +1308,12 @@ def _evaluate_one_sample(
             usage,
         )
         nonreason_pass = is_content_answer_only and not has_reasoning_signal
+        if mode == "mode6":
+            is_strict_boxed_only = is_content_answer_only = m6["content_answer_only"]
+            answer_only_pred = pred if is_content_answer_only else ""
+            nonreason_pass = m6["etr"]
         nonreason_correct = nonreason_pass and is_correct
-        observable_nonreason_pass = is_strict_boxed_only and not has_reasoning_signal
+        observable_nonreason_pass = nonreason_pass if mode == "mode6" else is_strict_boxed_only and not has_reasoning_signal
 
         return {
             **base_record,
@@ -1342,10 +1365,10 @@ def _evaluate_one_sample(
             "is_correct": is_correct,
             "boxed_inner": boxed_inner,
             "is_strict_boxed_only": is_strict_boxed_only,
-            "answer_only_prediction": answer_only_pred,
+            "answer_only_prediction": (pred if nonreason_pass else "") if mode == "mode6" else answer_only_pred,
             "content_answer_only_prediction": answer_only_pred,
             "is_content_answer_only": is_content_answer_only,
-            "is_answer_only": is_content_answer_only,
+            "is_answer_only": nonreason_pass if mode == "mode6" else is_content_answer_only,
             "api_answer_only_pass": nonreason_pass,
             "nonreason_pass": nonreason_pass,
             "nonreason_correct": nonreason_correct,
@@ -1416,7 +1439,7 @@ def _evaluate_one_sample(
             "observable_nonreason_pass": False,
             "finish_reason": "",
             "usage": {},
-            "raw_response": {},
+            "raw_response": raw if mode == "mode6" else {},
             "error": str(exc),
         }
 
@@ -1431,6 +1454,12 @@ def main() -> int:
         print(f"Unknown mode: {exc}", file=sys.stderr)
         return 2
     modes = [m for m in MODE_ORDER if m in set(modes)]
+    if "mode6" in modes:
+        try:
+            m6_prefill.load_tokenizer(args)
+        except (ValueError, OSError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
 
     root_dir = Path(args.root_dir).resolve()
     processed_dir = root_dir / "processed"
@@ -1442,6 +1471,8 @@ def main() -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     records_path = run_dir / "records.jsonl"
     records_path.parent.mkdir(parents=True, exist_ok=True)
+    if "mode6" in modes and records_path.exists() and not args.resume:
+        raise FileExistsError("M6 output already exists; choose a new run name or resume with identical settings")
 
     scorer = MiniLMSimilarityScorer(
         args.embedding_model_path,
@@ -1457,6 +1488,7 @@ def main() -> int:
     completed_keys: set[tuple[str, str, str]] = set()
     if args.resume:
         for record in _load_existing_records(records_path):
+            m6_prefill.validate_resume(args, record)
             mode = str(record.get("mode", ""))
             dataset_name = str(record.get("dataset", ""))
             rec_id = str(record.get("id", ""))
@@ -1495,7 +1527,7 @@ def main() -> int:
             for mode in modes:
                 print(f"[mode] {mode} [dataset] {dataset_name}: {len(rows)} samples")
                 skipped_count = 0
-                if args.request_concurrency > 1:
+                if args.request_concurrency > 1 or mode == "mode6":
                     pending: list[tuple[int, dict[str, Any], str]] = []
                     for i, sample in enumerate(rows, start=1):
                         rec_id = str(sample.get("id", f"{dataset_name}-{i}"))
@@ -1922,6 +1954,9 @@ def main() -> int:
             "gemini_mode1_effort": args.gemini_mode1_effort,
             "gemini_off_effort": args.gemini_off_effort,
             "modes": modes,
+            **({"m6_protocol": m6_prefill.PROTOCOL, "m6_prefill": args.m6_prefill,
+                "m6_tokenizer": args.m6_tokenizer, "m6_tokenizer_revision": args.m6_tokenizer_revision,
+                "m6_accuracy_policy": args.m6_accuracy_policy} if "mode6" in modes else {}),
             "mode_numbering": "paper",
             "mode_specs": MODE_SPECS,
             "temperature": args.temperature,
